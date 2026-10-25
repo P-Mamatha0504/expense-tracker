@@ -40,3 +40,11 @@ This is a Python-based application that helps users manage daily expenses, analy
 
 ## Author
 Pancheti Mamatha
+
+
+
+## Screenshots
+
+### Expense List
+
+![Expense Tracker Expense List](screenshots/expense-list.png)
