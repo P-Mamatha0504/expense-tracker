@@ -7,3 +7,4 @@ expenses.csv
 *.db
 *.sqlite
 *.sqlite3
+.streamlit/secrets.toml

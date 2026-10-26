@@ -1,6 +1,7 @@
-
 mysql-connector-python
 pandas
 numpy
 matplotlib
 openai
+streamlit
+plotly
