@@ -1,9 +1,14 @@
+
 from chatbot import ExpenseChatbot
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 from datetime import date
 from database import Database
 
+# ==================================================
+# PAGE SETTINGS
+# ==================================================
 st.set_page_config(
     page_title="Expense Tracker",
     page_icon="💰",
@@ -15,42 +20,100 @@ st.write("Manage, update, and analyze your personal expenses.")
 
 db = Database()
 
-# Split the page into two halves
-left, right = st.columns(2, gap="large")
 
-# Load the latest expenses
+# ==================================================
+# HELPER: CONVERT DATABASE RECORDS TO A DATAFRAME
+# ==================================================
+def create_expense_dataframe(records):
+    """Support dictionary records returned by Database.get_all_expenses()."""
+
+    if not records:
+        return pd.DataFrame(
+            columns=["ID", "Date", "Category", "Description", "Amount"]
+        )
+
+    df = pd.DataFrame(records)
+
+    # The database returns lowercase dictionary keys.
+    rename_columns = {
+        "id": "ID",
+        "date": "Date",
+        "expense_date": "Date",
+        "category": "Category",
+        "description": "Description",
+        "amount": "Amount"
+    }
+
+    df = df.rename(columns=rename_columns)
+
+    # Also support tuple/list records if returned by another database method.
+    if not {"ID", "Date", "Category", "Description", "Amount"}.issubset(
+        df.columns
+    ):
+        df = pd.DataFrame(
+            records,
+            columns=["ID", "Date", "Category", "Description", "Amount"]
+        )
+
+    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    return df
+
+
+# ==================================================
+# LOAD EXPENSES
+# ==================================================
 try:
     expenses = db.get_all_expenses()
+    df = create_expense_dataframe(expenses)
+
 except Exception as e:
     st.error(f"Unable to load expenses: {e}")
     st.stop()
 
-# Convert records into a DataFrame
-df = pd.DataFrame(
-    expenses,
-    columns=["ID", "Date", "Category", "Description", "Amount"]
-)
-
-if not df.empty:
-    df["Amount"] = pd.to_numeric(df["Amount"])
-    df["Date"] = pd.to_datetime(df["Date"])
 
 # ==================================================
-# LEFT HALF: ADD, EDIT, DELETE, AND EXPENSES TABLE
+# TWO-COLUMN LAYOUT
+# ==================================================
+left, right = st.columns(2, gap="large")
+
+
+# ==================================================
+# LEFT SIDE: EXPENSE MANAGEMENT
 # ==================================================
 with left:
 
     st.header("🧾 Expense Management")
 
-    # ---------------- ADD EXPENSE ----------------
+    # --------------------------------------------------
+    # ADD EXPENSE
+    # --------------------------------------------------
     st.subheader("➕ Add Expense")
 
     with st.form("add_expense_form"):
-        expense_date = st.date_input("Expense Date", value=date.today())
-        category = st.text_input("Category", placeholder="Food, Travel, Bills")
-        description = st.text_input("Description", placeholder="Lunch, Bus ticket")
+
+        expense_date = st.date_input(
+            "Expense Date",
+            value=date.today(),
+            key="add_date"
+        )
+
+        category = st.text_input(
+            "Category",
+            placeholder="Food, Travel, Bills"
+        )
+
+        description = st.text_input(
+            "Description",
+            placeholder="Lunch, Bus ticket"
+        )
+
         amount = st.number_input(
-            "Amount (₹)", min_value=0.01, value=100.0, step=1.0
+            "Amount (₹)",
+            min_value=0.01,
+            value=100.0,
+            step=1.0
         )
 
         submitted = st.form_submit_button("Add Expense")
@@ -58,8 +121,10 @@ with left:
         if submitted:
             if not category.strip():
                 st.error("Please enter a category.")
+
             elif not description.strip():
                 st.error("Please enter a description.")
+
             else:
                 try:
                     db.add_expense(
@@ -68,18 +133,26 @@ with left:
                         description.strip(),
                         amount
                     )
+
                     st.success("Expense added successfully!")
                     st.rerun()
+
                 except Exception as e:
                     st.error(f"Unable to add expense: {e}")
 
-    # ---------------- EDIT EXPENSE ----------------
+    # --------------------------------------------------
+    # EDIT EXPENSE
+    # --------------------------------------------------
     st.divider()
     st.subheader("✏️ Edit Expense")
 
     if not df.empty:
+
         options = {
-            f"ID {row.ID} — {row.Category} — ₹{row.Amount:,.2f}": row
+            (
+                f"ID {row.ID} — {row.Category} — "
+                f"₹{row.Amount:,.2f}"
+            ): row
             for row in df.itertuples(index=False)
         }
 
@@ -91,26 +164,37 @@ with left:
 
         selected = options[edit_label]
 
+        # Date is a pandas Timestamp; convert it to a Python date.
+        selected_date = (
+            selected.Date.date()
+            if pd.notna(selected.Date)
+            else date.today()
+        )
+
         with st.form("edit_expense_form"):
+
             new_date = st.date_input(
                 "New date",
-                value=selected.Date.date(),
+                value=selected_date,
                 key="edit_date"
             )
+
             new_category = st.text_input(
                 "New category",
                 value=str(selected.Category),
                 key="edit_category"
             )
+
             new_description = st.text_input(
                 "New description",
                 value=str(selected.Description or ""),
                 key="edit_description"
             )
+
             new_amount = st.number_input(
                 "New amount (₹)",
                 min_value=0.01,
-                value=float(selected.Amount),
+                value=max(float(selected.Amount), 0.01),
                 step=1.0,
                 key="edit_amount"
             )
@@ -118,8 +202,15 @@ with left:
             save_changes = st.form_submit_button("Save Changes")
 
             if save_changes:
-                if not new_category.strip() or not new_description.strip():
-                    st.error("Category and description cannot be empty.")
+
+                if (
+                    not new_category.strip()
+                    or not new_description.strip()
+                ):
+                    st.error(
+                        "Category and description cannot be empty."
+                    )
+
                 else:
                     try:
                         changed = db.update_expense(
@@ -129,15 +220,23 @@ with left:
                             new_description.strip(),
                             new_amount
                         )
+
                         if changed:
-                            st.success("Expense updated!")
+                            st.success("Expense updated successfully!")
                         else:
-                            st.info("No database row was changed.")
+                            st.info(
+                                "No database row was changed. "
+                                "The values may be unchanged."
+                            )
+
                         st.rerun()
+
                     except Exception as e:
                         st.error(f"Unable to update expense: {e}")
 
-        # ---------------- DELETE EXPENSE ----------------
+        # --------------------------------------------------
+        # DELETE EXPENSE
+        # --------------------------------------------------
         st.divider()
         st.subheader("🗑️ Delete Expense")
 
@@ -153,132 +252,207 @@ with left:
         )
 
         if st.button("Delete Selected Expense"):
+
             if not confirm_delete:
-                st.warning("Please confirm before deleting.")
+                st.warning(
+                    "Please confirm before deleting the expense."
+                )
+
             else:
                 try:
-                    deleted = db.delete_expense(int(options[delete_label].ID))
+                    deleted = db.delete_expense(
+                        int(options[delete_label].ID)
+                    )
+
                     if deleted:
-                        st.success("Expense deleted!")
+                        st.success("Expense deleted successfully!")
                     else:
                         st.warning("Expense was not found.")
+
                     st.rerun()
+
                 except Exception as e:
                     st.error(f"Unable to delete expense: {e}")
 
     else:
-        st.info("Add an expense to enable editing and deletion.")
+        st.info(
+            "No expenses are available yet. "
+            "Add an expense to enable editing and deletion."
+        )
 
-    # ---------------- TABLE AT THE BOTTOM OF LEFT HALF ----------------
+    # --------------------------------------------------
+    # ALL EXPENSES TABLE
+    # --------------------------------------------------
     st.divider()
     st.subheader("📋 All Expenses")
 
-    # Fetch again so the table shows current database records
-    latest = db.get_all_expenses()
+    try:
+        latest = db.get_all_expenses()
+        latest_df = create_expense_dataframe(latest)
 
-    if latest:
-        latest_df = pd.DataFrame(
-            latest,
-            columns=["ID", "Date", "Category", "Description", "Amount"]
-        )
-        st.dataframe(latest_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No expenses found yet.")
+        if not latest_df.empty:
+            display_df = latest_df.copy()
+
+            # Display continuous serial numbers after deletions.
+            display_df = display_df.reset_index(drop=True)
+         
+
+            # Format dates for display.
+            display_df["Date"] = display_df["Date"].dt.date
+
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+            st.info("No expenses found yet.")
+
+    except Exception as e:
+        st.error(f"Unable to display expenses: {e}")
 
 # ==================================================
-# RIGHT HALF: CHARTS AND ANALYSIS
+# RIGHT SIDE: SPENDING DASHBOARD
 # ==================================================
 with right:
 
     st.header("📊 Spending Dashboard")
 
-    # Fetch current data for the charts
-    chart_expenses = db.get_all_expenses()
+    try:
+        chart_expenses = db.get_all_expenses()
+        chart_df = create_expense_dataframe(chart_expenses)
 
-    if chart_expenses:
-        chart_df = pd.DataFrame(
-            chart_expenses,
-            columns=["ID", "Date", "Category", "Description", "Amount"]
+    except Exception as e:
+        st.error(f"Unable to load spending analysis: {e}")
+        chart_df = pd.DataFrame()
+
+    if not chart_df.empty:
+
+        chart_df = chart_df.dropna(
+            subset=["Date", "Amount", "Category"]
         )
 
-        chart_df["Amount"] = pd.to_numeric(chart_df["Amount"])
-        chart_df["Date"] = pd.to_datetime(chart_df["Date"])
+        if not chart_df.empty:
 
-        total_spending = chart_df["Amount"].sum()
-        expense_count = len(chart_df)
+            # --------------------------------------------------
+            # SUMMARY METRICS
+            # --------------------------------------------------
+            total_spending = chart_df["Amount"].sum()
+            expense_count = len(chart_df)
 
-        metric1, metric2 = st.columns(2)
-        metric1.metric("Total Spent", f"₹{total_spending:,.2f}")
-        metric2.metric("Transactions", expense_count)
+            metric1, metric2 = st.columns(2)
 
-        # ---------------- CATEGORY PIE CHART ----------------
-        st.subheader("Spending by Category")
+            metric1.metric(
+                "Total Spent",
+                f"₹{total_spending:,.2f}"
+            )
 
-        category_totals = (
-            chart_df.groupby("Category")["Amount"]
-            .sum()
-            .sort_values(ascending=False)
-        )
+            metric2.metric(
+                "Transactions",
+                expense_count
+            )
 
-        st.write("Category-wise spending distribution")
-        st.plotly_chart(
-            # Streamlit's built-in chart uses Altair; this pie chart uses Plotly
-            __import__("plotly.express", fromlist=["pie"]).pie(
-                category_totals.reset_index(),
+            # --------------------------------------------------
+            # CATEGORY PIE CHART
+            # --------------------------------------------------
+            st.subheader("Spending by Category")
+
+            category_totals = (
+                chart_df.groupby("Category")["Amount"]
+                .sum()
+                .sort_values(ascending=False)
+            )
+
+            category_chart_df = (
+                category_totals
+                .rename_axis("Category")
+                .reset_index(name="Amount")
+            )
+
+            fig_pie = px.pie(
+                category_chart_df,
                 names="Category",
                 values="Amount",
-                title="Expenses by Category"
-            ),
-            use_container_width=True
-        )
+                title="Expenses by Category",
+                hole=0.3
+            )
 
-        # ---------------- MONTHLY BAR CHART ----------------
-        st.subheader("Monthly Spending")
+            st.plotly_chart(
+                fig_pie,
+                use_container_width=True
+            )
 
-        chart_df["Month"] = chart_df["Date"].dt.to_period("M").astype(str)
+            # --------------------------------------------------
+            # MONTHLY SPENDING BAR CHART
+            # --------------------------------------------------
+            st.subheader("Monthly Spending")
 
-        monthly_totals = (
-            chart_df.groupby("Month", as_index=False)["Amount"]
-            .sum()
-            .sort_values("Month")
-        )
+            chart_df["Month"] = (
+                chart_df["Date"]
+                .dt.to_period("M")
+                .astype(str)
+            )
 
-        st.bar_chart(
-            monthly_totals.set_index("Month")["Amount"],
-            y_label="Amount (₹)"
-        )
+            monthly_totals = (
+                chart_df.groupby("Month", as_index=False)["Amount"]
+                .sum()
+                .sort_values("Month")
+            )
 
-        # ---------------- ANALYSIS ----------------
-        st.subheader("💡 Expense Analysis")
+            st.bar_chart(
+                monthly_totals.set_index("Month")["Amount"],
+                y_label="Amount (₹)"
+            )
 
-        highest_category = category_totals.idxmax()
-        highest_amount = category_totals.max()
+            # --------------------------------------------------
+            # EXPENSE ANALYSIS
+            # --------------------------------------------------
+            st.subheader("💡 Expense Analysis")
 
-        st.write(
-            f"Your highest spending category is **{highest_category}**, "
-            f"with ₹{highest_amount:,.2f} spent."
-        )
+            highest_category = category_totals.idxmax()
+            highest_amount = category_totals.max()
 
-        average_expense = total_spending / expense_count
-        st.write(f"Your average expense is **₹{average_expense:,.2f}**.")
+            st.write(
+                f"Your highest spending category is "
+                f"**{highest_category}**, with "
+                f"**₹{highest_amount:,.2f}** spent."
+            )
 
-        chart_df["Month"] = chart_df["Date"].dt.to_period("M").astype(str)
-        monthly_summary = chart_df.groupby("Month")["Amount"].sum()
+            average_expense = total_spending / expense_count
 
-        st.write("Monthly totals:")
-        st.dataframe(
-            monthly_summary.rename("Total (₹)").reset_index(),
-            use_container_width=True,
-            hide_index=True
-        )
+            st.write(
+                f"Your average expense is "
+                f"**₹{average_expense:,.2f}**."
+            )
+
+            st.write("Monthly totals:")
+
+            st.dataframe(
+                monthly_totals.rename(
+                    columns={"Amount": "Total (₹)"}
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+            st.info(
+                "Expense records do not contain valid dates, "
+                "categories, or amounts for analysis."
+            )
 
     else:
-        st.info("Add expenses to see charts and spending analysis.")
+        st.info(
+            "Add expenses to see charts and spending analysis."
+        )
 
-
-    
+    # ==================================================
+    # AI EXPENSE ASSISTANT
+    # ==================================================
     st.divider()
-    st.subheader("AI Expense Assistant")
+    st.subheader("🤖 AI Expense Assistant")
+
     st.write("Ask questions about your spending and expenses.")
 
     if "ai_chat_history" not in st.session_state:
@@ -291,8 +465,10 @@ with right:
     )
 
     if st.button("Ask AI", key="ask_expense_ai"):
+
         if not question.strip():
             st.warning("Please enter a question.")
+
         else:
             try:
                 chatbot = ExpenseChatbot(db)
@@ -308,24 +484,23 @@ with right:
                     question.strip()
                 )
 
-                st.session_state.ai_chat_history.append(
-                    {
-                        "question": question.strip(),
-                        "answer": answer
-                    }
-                )
+                st.session_state.ai_chat_history.append({
+                    "question": question.strip(),
+                    "answer": answer
+                })
 
             except ValueError:
                 st.error(
-                    "Gemini API key is missing. "
-                    "Please configure GEMINI_API_KEY."
+                    "The Gemini API key may be missing. "
+                    "Please check your GEMINI_API_KEY configuration."
                 )
 
             except Exception as e:
-                st.error(f"AI error: {type(e).__name__}: {e}")
+                st.error(
+                    f"AI error: {type(e).__name__}: {e}"
+                )
 
     for message in st.session_state.ai_chat_history:
         st.markdown("**You:** " + message["question"])
         st.markdown("**AI:** " + message["answer"])
         st.divider()
-
